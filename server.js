@@ -1,25 +1,25 @@
-import http from "node:http";
-import { URL } from "node:url";
+const express = require("express");
+const cors = require("cors");
 
-const PORT = process.env.PORT || 10000;
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_FOOTBALL_KEY;
-const API_URL = "https://v3.football.api-sports.io";
 
-if (!API_KEY) {
-  console.error("Missing API_FOOTBALL_KEY environment variable.");
-}
+const API_BASE = "https://v3.football.api-sports.io";
 
-const cache = new Map();
+console.log("PulseSport starting...");
+console.log("API key connected:", !!API_KEY);
 
-async function football(endpoint, cacheSeconds = 30) {
-  const now = Date.now();
-  const saved = cache.get(endpoint);
-
-  if (saved && now - saved.time < cacheSeconds * 1000) {
-    return saved.data;
+async function footballAPI(endpoint) {
+  if (!API_KEY) {
+    throw new Error("API_FOOTBALL_KEY is not connected on Render");
   }
 
-  const response = await fetch(`${API_URL}${endpoint}`, {
+  const response = await fetch(API_BASE + endpoint, {
     headers: {
       "x-apisports-key": API_KEY
     }
@@ -28,261 +28,201 @@ async function football(endpoint, cacheSeconds = 30) {
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(data?.message || `Football API error: ${response.status}`);
+    throw new Error(
+      data?.message ||
+      data?.errors?.message ||
+      "API-Football request failed"
+    );
   }
 
-  cache.set(endpoint, {
-    time: now,
-    data
-  });
+  if (data.errors && Object.keys(data.errors).length > 0) {
+    throw new Error(JSON.stringify(data.errors));
+  }
 
   return data;
 }
 
-function send(res, status, data) {
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Cache-Control": "no-store"
+
+/* HOME / SERVER TEST */
+
+app.get("/", (req, res) => {
+  res.json({
+    name: "PulseSport Backend",
+    status: "online",
+    apiKeyConnected: !!API_KEY
   });
+});
 
-  res.end(JSON.stringify(data));
-}
 
-function today() {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Africa/Lagos"
-  }).format(new Date());
-}
+/* TODAY */
 
-const server = http.createServer(async (req, res) => {
+app.get("/api/fixtures/today", async (req, res) => {
   try {
-    if (req.method === "OPTIONS") {
-      res.writeHead(204, {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET,OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type"
-      });
-      return res.end();
-    }
+    const today = new Date().toISOString().slice(0, 10);
 
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const path = url.pathname;
+    const data = await footballAPI(
+      `/fixtures?date=${today}`
+    );
 
-    if (path === "/") {
-      return send(res, 200, {
-        name: "PulseSport API",
-        status: "online",
-        time: new Date().toISOString()
-      });
-    }
-
-    if (!API_KEY) {
-      return send(res, 500, {
-        error: "API_FOOTBALL_KEY is not configured on the server."
-      });
-    }
-
-    // Today's fixtures
-    if (path === "/api/fixtures/today") {
-      const data = await football(
-        `/fixtures?date=${today()}`,
-        60
-      );
-
-      return send(res, 200, data);
-    }
-
-    // Live matches
-    if (path === "/api/live") {
-      const data = await football(
-        "/fixtures?live=all",
-        15
-      );
-
-      return send(res, 200, data);
-    }
-
-    // Upcoming fixtures
-    if (path === "/api/fixtures/upcoming") {
-      const date = url.searchParams.get("date");
-
-      if (!date) {
-        return send(res, 400, {
-          error: "Use ?date=YYYY-MM-DD"
-        });
-      }
-
-      const data = await football(
-        `/fixtures?date=${encodeURIComponent(date)}`,
-        300
-      );
-
-      return send(res, 200, data);
-    }
-
-    // Single match
-    if (path.startsWith("/api/match/")) {
-      const id = path.split("/").pop();
-
-      if (!/^\d+$/.test(id)) {
-        return send(res, 400, { error: "Invalid match ID" });
-      }
-
-      const data = await football(
-        `/fixtures?id=${id}`,
-        30
-      );
-
-      return send(res, 200, data);
-    }
-
-    // Match events
-    if (path.startsWith("/api/match/") && path.endsWith("/events")) {
-      const parts = path.split("/");
-      const id = parts[3];
-
-      const data = await football(
-        `/fixtures/events?fixture=${id}`,
-        30
-      );
-
-      return send(res, 200, data);
-    }
-
-    // Match statistics
-    if (path.startsWith("/api/match/") && path.endsWith("/stats")) {
-      const parts = path.split("/");
-      const id = parts[3];
-
-      const data = await football(
-        `/fixtures/statistics?fixture=${id}`,
-        60
-      );
-
-      return send(res, 200, data);
-    }
-
-    // Match lineups
-    if (path.startsWith("/api/match/") && path.endsWith("/lineups")) {
-      const parts = path.split("/");
-      const id = parts[3];
-
-      const data = await football(
-        `/fixtures/lineups?fixture=${id}`,
-        300
-      );
-
-      return send(res, 200, data);
-    }
-
-    // Team information
-    if (path.startsWith("/api/team/")) {
-      const id = path.split("/").pop();
-
-      if (!/^\d+$/.test(id)) {
-        return send(res, 400, { error: "Invalid team ID" });
-      }
-
-      const data = await football(
-        `/teams?id=${id}`,
-        3600
-      );
-
-      return send(res, 200, data);
-    }
-
-    // Team fixtures
-    if (path.startsWith("/api/team/") && path.endsWith("/fixtures")) {
-      const parts = path.split("/");
-      const id = parts[3];
-      const season = url.searchParams.get("season");
-
-      if (!season) {
-        return send(res, 400, {
-          error: "Use ?season=YYYY"
-        });
-      }
-
-      const data = await football(
-        `/fixtures?team=${id}&season=${season}`,
-        600
-      );
-
-      return send(res, 200, data);
-    }
-
-    // H2H
-    if (path === "/api/h2h") {
-      const team1 = url.searchParams.get("team1");
-      const team2 = url.searchParams.get("team2");
-
-      if (!team1 || !team2) {
-        return send(res, 400, {
-          error: "Use ?team1=ID&team2=ID"
-        });
-      }
-
-      const data = await football(
-        `/fixtures/headtohead?h2h=${team1}-${team2}`,
-        1800
-      );
-
-      return send(res, 200, data);
-    }
-
-    // Standings
-    if (path === "/api/standings") {
-      const league = url.searchParams.get("league");
-      const season = url.searchParams.get("season");
-
-      if (!league || !season) {
-        return send(res, 400, {
-          error: "Use ?league=LEAGUE_ID&season=YYYY"
-        });
-      }
-
-      const data = await football(
-        `/standings?league=${league}&season=${season}`,
-        1800
-      );
-
-      return send(res, 200, data);
-    }
-
-    // Injuries
-    if (path === "/api/injuries") {
-      const team = url.searchParams.get("team");
-      const season = url.searchParams.get("season");
-
-      if (!team || !season) {
-        return send(res, 400, {
-          error: "Use ?team=TEAM_ID&season=YYYY"
-        });
-      }
-
-      const data = await football(
-        `/injuries?team=${team}&season=${season}`,
-        1800
-      );
-
-      return send(res, 200, data);
-    }
-
-    return send(res, 404, {
-      error: "Route not found"
-    });
+    res.json(data);
 
   } catch (error) {
-    console.error(error);
+    console.error("Today error:", error.message);
 
-    return send(res, 500, {
-      error: "Server error",
-      message: error.message
+    res.status(500).json({
+      error: error.message
     });
   }
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`PulseSport API running on port ${PORT}`);
+
+/* FIXTURES BY DATE */
+
+app.get("/api/fixtures/upcoming", async (req, res) => {
+  try {
+    const date = req.query.date;
+
+    if (!date) {
+      return res.status(400).json({
+        error: "Date is required"
+      });
+    }
+
+    const data = await footballAPI(
+      `/fixtures?date=${encodeURIComponent(date)}`
+    );
+
+    res.json(data);
+
+  } catch (error) {
+    console.error("Date error:", error.message);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+
+/* LIVE MATCHES */
+
+app.get("/api/live", async (req, res) => {
+  try {
+    const data = await footballAPI(
+      "/fixtures?live=all"
+    );
+
+    res.json(data);
+
+  } catch (error) {
+    console.error("Live error:", error.message);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+
+/* MATCH DETAILS */
+
+app.get("/api/match/:id", async (req, res) => {
+  try {
+    const data = await footballAPI(
+      `/fixtures?id=${encodeURIComponent(req.params.id)}`
+    );
+
+    res.json(data);
+
+  } catch (error) {
+    console.error("Match error:", error.message);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+
+/* MATCH STATISTICS */
+
+app.get("/api/match/:id/stats", async (req, res) => {
+  try {
+    const data = await footballAPI(
+      `/fixtures/statistics?fixture=${encodeURIComponent(req.params.id)}`
+    );
+
+    res.json(data);
+
+  } catch (error) {
+    console.error("Stats error:", error.message);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+
+/* MATCH LINEUPS */
+
+app.get("/api/match/:id/lineups", async (req, res) => {
+  try {
+    const data = await footballAPI(
+      `/fixtures/lineups?fixture=${encodeURIComponent(req.params.id)}`
+    );
+
+    res.json(data);
+
+  } catch (error) {
+    console.error("Lineups error:", error.message);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+
+/* HEAD TO HEAD */
+
+app.get("/api/h2h", async (req, res) => {
+  try {
+    const { team1, team2 } = req.query;
+
+    if (!team1 || !team2) {
+      return res.status(400).json({
+        error: "team1 and team2 are required"
+      });
+    }
+
+    const data = await footballAPI(
+      `/fixtures/headtohead?h2h=${encodeURIComponent(team1)}-${encodeURIComponent(team2)}`
+    );
+
+    res.json(data);
+
+  } catch (error) {
+    console.error("H2H error:", error.message);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+
+/* 404 */
+
+app.use((req, res) => {
+  res.status(404).json({
+    error: "PulseSport route not found"
+  });
+});
+
+
+/* START */
+
+app.listen(PORT, () => {
+  console.log(`PulseSport running on port ${PORT}`);
 });
